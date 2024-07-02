@@ -50,7 +50,17 @@ def find_multiple(n: int, k: int) -> int:
 # RMSNorm (Root Mean Square Layer Normalization)
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
-        raise NotImplementedError("RMSNorm not implemented yet")
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        return self._norm(x.float()).type_as(x)
+
+    def _norm(self, x):
+        denominator = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return x / denominator
 
 
 # Precompute frequency tensor for rotary positional embedding
@@ -64,7 +74,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
 
 # Apply rotary positional embedding
 def apply_rotary_emb(
-    xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
+        xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
@@ -90,7 +100,7 @@ class Attention(nn.Module):
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
 
     def forward(
-        self, x: torch.Tensor, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]
+            self, x: torch.Tensor, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]
     ):
         bsz, seqlen, _ = x.shape
 
@@ -137,11 +147,9 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
-        # SwiGLU activation function
-        raise NotImplementedError("SwiGLU activation function not implemented yet")
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
-# Transformer block
 class TransformerBlock(nn.Module):
     def __init__(self, layer_id: int, args: ModelArgs):
         super().__init__()
@@ -159,7 +167,7 @@ class TransformerBlock(nn.Module):
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
     def forward(
-        self, x: torch.Tensor, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]
+            self, x: torch.Tensor, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]
     ):
         # Apply attention
         h = x + self.attention.forward(self.attention_norm(x), freqs_cis, mask)
@@ -191,12 +199,14 @@ class Transformer(nn.Module):
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         self.freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+        freqs_cis = self.freqs_cis[start_pos: start_pos + seqlen]
 
         # Create causal mask
         mask = None
         if seqlen > 1:
-            raise NotImplementedError("Causal mask not implemented yet")
+            # mask = self.causal_mask(seqlen).to(h.device)
+            mask = torch.full((1, 1, seqlen, seqlen), float('-inf'), device=h.device)
+            mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
         # Apply transformer layers
         for layer in self.layers:
@@ -204,6 +214,18 @@ class Transformer(nn.Module):
         h = self.norm(h)
         output = self.output(h)  # Return logits for all positions
         return output
+
+    # @staticmethod
+    # def causal_mask(size):
+    #     """
+    #     Create a causal mask of shape (size, size) with zeros in the lower triangle
+    #     (including the diagonal) and -inf in the upper triangle.
+    #     """
+    #     mask = torch.full((1, 1, size, size), float('-inf'))
+    #
+    #     mask = torch.triu(mask, diagonal=start_pos + 1, diagonal=1)
+    #     # mask = mask.masked_fill(mask == 1, float('-inf'))
+    #     return mask
 
 
 # Helper function to repeat key/value heads
@@ -323,7 +345,7 @@ def main():
 
     # Training configuration
     batch_size = 16
-    num_epochs = 1
+    num_epochs = 10
     learning_rate = 5e-5
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
