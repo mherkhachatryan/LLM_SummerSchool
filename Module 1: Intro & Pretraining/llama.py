@@ -283,6 +283,7 @@ def train(model, dataloader, optimizer, scheduler, device, num_epochs, pad_token
         total_loss = 0
         total_tokens = 0
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch + 1}")
+        best_perplexity = float('inf')  # Initialize with a high value
 
         for batch in progress_bar:
             batch = batch.to(device)
@@ -327,6 +328,12 @@ def train(model, dataloader, optimizer, scheduler, device, num_epochs, pad_token
         print(
             f"Epoch {epoch + 1}, Average Loss: {avg_loss:.4f}, Perplexity: {perplexity:.2f}"
         )
+        # Save model if perplexity is lower than the best perplexity
+        if epoch % 20 == 0:
+            if perplexity < best_perplexity:
+                best_perplexity = perplexity
+                torch.save(model.state_dict(), f"llama_wikitext_trained_{epoch}.pth")
+                print(f"New best model saved with perplexity: {best_perplexity:.2f}")
 
 
 def main():
@@ -344,8 +351,8 @@ def main():
     )
 
     # Training configuration
-    batch_size = 16
-    num_epochs = 10
+    batch_size = 4
+    num_epochs = 300
     learning_rate = 5e-5
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
