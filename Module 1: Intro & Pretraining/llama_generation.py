@@ -5,8 +5,6 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer
 from dataclasses import dataclass
 from typing import Optional
-import random
-
 
 # First, we need to recreate the model architecture
 # (You can copy the model-related classes from the training script)
@@ -63,7 +61,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
 
 
 def apply_rotary_emb(
-        xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
+    xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
@@ -87,7 +85,7 @@ class Attention(nn.Module):
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
 
     def forward(
-            self, x: torch.Tensor, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]
+        self, x: torch.Tensor, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]
     ):
         bsz, seqlen, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
@@ -144,7 +142,7 @@ class TransformerBlock(nn.Module):
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
     def forward(
-            self, x: torch.Tensor, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]
+        self, x: torch.Tensor, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]
     ):
         h = x + self.attention.forward(self.attention_norm(x), freqs_cis, mask)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
@@ -173,7 +171,7 @@ class Transformer(nn.Module):
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         self.freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = self.freqs_cis[start_pos: start_pos + seqlen]
+        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
         mask = None
         if seqlen > 1:
@@ -219,39 +217,21 @@ def generate_text_greedy(model, tokenizer, prompt, max_length=50, temperature=1.
     return generated_text
 
 
-def generate_text_sampling(model, tokenizer, prompt, max_length=50, temperature=1.0, device=None):
-    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
-
-    with torch.no_grad():
-        for _ in range(max_length):
-            outputs = model(input_ids, start_pos=0)
-            next_token_logits = outputs[:, -1, :] / temperature
-            next_token = torch.multinomial(F.softmax(next_token_logits, dim=-1), num_samples=1)
-            input_ids = torch.cat([input_ids, next_token], dim=-1)
-
-            if next_token.item() == tokenizer.eos_token_id:
-                break
-
-    generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
-    return generated_text
-    # raise NotImplementedError("Sampling not implemented yet")
-
-
-def generate_text_topk(
-        model, tokenizer, prompt, max_length=50, temperature=1.0, topk=50,
-        device=None
-
-):
+def generate_text_sampling(model, tokenizer, prompt, max_length=50, temperature=1.0):
     model.eval()
-    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+    input_ids = tokenizer.encode(prompt, return_tensors="pt").cuda()
 
     with torch.no_grad():
         for _ in range(max_length):
             outputs = model(input_ids, start_pos=0)
             next_token_logits = outputs[:, -1, :] / temperature
-            top_k_logits, top_tokens_indices = torch.topk(next_token_logits, topk, dim=-1)
-            next_token_index = torch.multinomial(F.softmax(top_k_logits, dim=-1), num_samples=1)
-            next_token = top_tokens_indices.gather(dim=-1, index=next_token_index)
+
+            # Apply softmax to get probabilities
+            probs = F.softmax(next_token_logits, dim=-1)
+
+            # Sample from the probability distribution
+            next_token = torch.multinomial(probs, num_samples=1)
+
             input_ids = torch.cat([input_ids, next_token], dim=-1)
 
             if next_token.item() == tokenizer.eos_token_id:
@@ -260,20 +240,25 @@ def generate_text_topk(
     generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
     return generated_text
 
-
-def generate_text_topp(
-        model, tokenizer, prompt, max_length=50, temperature=1.0, topp=0.9,
-        device=None):
+def generate_text_topk(model, tokenizer, prompt, max_length=50, temperature=1.0, topk=50):
     model.eval()
-    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+    input_ids = tokenizer.encode(prompt, return_tensors="pt").cuda()
 
     with torch.no_grad():
         for _ in range(max_length):
             outputs = model(input_ids, start_pos=0)
             next_token_logits = outputs[:, -1, :] / temperature
-            top_k_logits, top_tokens_indices = torch.topk(next_token_logits, topk, dim=-1)
-            next_token_index = torch.multinomial(F.softmax(top_k_logits, dim=-1), num_samples=1)
-            next_token = top_tokens_indices.gather(dim=-1, index=next_token_index)
+
+            # Get the top-k logits and indices
+            top_k_logits, top_k_indices = torch.topk(next_token_logits, k=topk, dim=-1)
+
+            # Apply softmax to get probabilities for top-k tokens
+            probs = F.softmax(top_k_logits, dim=-1)
+
+            # Sample from the top-k probability distribution
+            next_token_index = torch.multinomial(probs, num_samples=1)
+            next_token = top_k_indices.gather(-1, next_token_index)
+
             input_ids = torch.cat([input_ids, next_token], dim=-1)
 
             if next_token.item() == tokenizer.eos_token_id:
@@ -282,27 +267,50 @@ def generate_text_topp(
     generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
     return generated_text
 
+def generate_text_topp(model, tokenizer, prompt, max_length=50, temperature=1.0, topp=0.9):
+    model.eval()
+    input_ids = tokenizer.encode(prompt, return_tensors="pt").cuda()
 
-def generate_text(model, tokenizer, prompt, max_length=50, device=None, method="greedy"):
-    if method == "greedy":
-        return generate_text_greedy(model, tokenizer, prompt, max_length, device=device)
-    elif method == "sampling":
-        return generate_text_sampling(model, tokenizer, prompt, max_length, device=device)
-    elif method == "topk":
-        return generate_text_topk(model, tokenizer, prompt, max_length, device=device)
-    elif method == "topp":
-        return generate_text_topp(model, tokenizer, prompt, max_length, device=device)
-    else:
-        raise ValueError("Invalid generation method")
+    with torch.no_grad():
+        for _ in range(max_length):
+            outputs = model(input_ids, start_pos=0)
+            next_token_logits = outputs[:, -1, :] / temperature
+
+            # Sort logits in descending order
+            sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
+
+            # Calculate cumulative probabilities
+            cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+            # Remove tokens with cumulative probability above the threshold
+            sorted_indices_to_remove = cumulative_probs > topp
+            # Shift the indices to the right to keep also the first token above the threshold
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            sorted_indices_to_remove[..., 0] = 0
+            # Create a mask for indices to remove
+            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+            # Set the logits of indices to remove to negative infinity
+            next_token_logits = next_token_logits.masked_fill(indices_to_remove, float('-inf'))
+            # Sample from the filtered distribution
+            probs = F.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+
+            input_ids = torch.cat([input_ids, next_token], dim=-1)
+
+            if next_token.item() == tokenizer.eos_token_id:
+                break
+
+    generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+    return generated_text
 
 
 def main():
     # Model configuration (make sure it matches the training configuration)
     model_args = ModelArgs(
-        dim=64,
-        n_layers=4,
-        n_heads=4,
-        n_kv_heads=4,
+        dim=128,
+        n_layers=64,
+        n_heads=64,
+        n_kv_heads=64,
         vocab_size=50257,  # GPT-2 vocab size
         multiple_of=32,
         max_seq_len=128,
@@ -322,10 +330,24 @@ def main():
 
     # Generate text
     prompt = "In a world where"
-    generated_text = generate_text(model, tokenizer, prompt, max_length=50, device=device, method="topk")
-
-    print(f"Prompt: {prompt}")
+    print(f"Prompt: {prompt}\n")
+    print("Greedy Decoding")
+    generated_text = generate_text_greedy(model, tokenizer, prompt, max_length=50)
     print(f"Generated text: {generated_text}")
+    print("__"*30)
+    print("Sampling Decoding")
+    generated_text = generate_text_sampling(model, tokenizer, prompt, max_length=50)
+    print(f"Generated text: {generated_text}")
+    print("__"*30)
+    print("Top-K Decoding")
+    generated_text = generate_text_topk(model, tokenizer, prompt, max_length=50)
+    print(f"Generated text: {generated_text}")
+    print("__"*30)
+    print("Top-p / Nucleus Decoding")
+    generated_text = generate_text_topp(model, tokenizer, prompt, max_length=50)
+    print(f"Generated text: {generated_text}")
+
+
 
 
 if __name__ == "__main__":
