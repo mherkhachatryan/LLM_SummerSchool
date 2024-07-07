@@ -54,14 +54,14 @@ class PositionalEncoding2D(nn.Module):
             dtype=tensor.dtype,
         )
         emb[:, :, : self.channels] = emb_x
-        emb[:, :, self.channels : 2 * self.channels] = emb_y
+        emb[:, :, self.channels: 2 * self.channels] = emb_y
         self.cached_penc = emb[None, :, :, :orig_ch].repeat(tensor.shape[0], 1, 1, 1)
         return self.cached_penc
 
 
 class ViTEncoder(nn.Module):
     def __init__(
-        self, in_channels, num_heads, num_layers, embedding_dim, patch_size, image_size
+            self, in_channels, num_heads, num_layers, embedding_dim, patch_size, image_size
     ):
         super().__init__()
         self.patch_embed = nn.Conv2d(
@@ -89,7 +89,7 @@ class ViTEncoder(nn.Module):
 
 class ViTDecoder(nn.Module):
     def __init__(
-        self, out_channels, num_heads, num_layers, embedding_dim, patch_size, image_size
+            self, out_channels, num_heads, num_layers, embedding_dim, patch_size, image_size
     ):
         super().__init__()
         self.pos_encoding = PositionalEncoding2D(embedding_dim)
@@ -134,6 +134,10 @@ class VectorQuantizer(nn.Module):
         z_flattened = z.view(-1, self.e_dim)
 
         # TODO: Implement the distance metric d between points.
+        d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
+            torch.sum(self.embedding.weight ** 2, dim=1) - \
+             2 * torch.matmul(z_flattened, self.embedding.weight.t())
+
         min_encoding_indices = torch.argmin(d, dim=1).unsqueeze(1)
         min_encodings = torch.zeros(min_encoding_indices.shape[0], self.n_e).to(
             z.device
@@ -146,7 +150,12 @@ class VectorQuantizer(nn.Module):
         z_q = torch.matmul(min_encodings, self.embedding.weight).view(z.shape)
 
         # TODO: loss = ...
-
+        # loss = F.mse_loss(z_q.detach(), z) + self.beta * F.mse_loss(z_q, z.detach())
+        loss = (z_q.detach() - z).pow(2).mean()
+        loss = loss + self.beta * (z_q - z.detach()).pow(2).mean()
+        # reconstruction_loss = F.mse_loss(z_q, z)
+        # commitment_loss = self.beta * F.mse_loss(z.detach(), z_q)
+        # loss = reconstruction_loss + commitment_loss
         z_q = z + (z_q - z).detach()
 
         e_mean = torch.mean(min_encodings, dim=0)
@@ -159,15 +168,15 @@ class VectorQuantizer(nn.Module):
 
 class ViT_VQVAE(nn.Module):
     def __init__(
-        self,
-        in_channels,
-        latent_dim,
-        num_embeddings,
-        num_heads,
-        num_layers,
-        patch_size,
-        image_size,
-        beta=0.25,
+            self,
+            in_channels,
+            latent_dim,
+            num_embeddings,
+            num_heads,
+            num_layers,
+            patch_size,
+            image_size,
+            beta=0.25,
     ):
         super().__init__()
         self.encoder = ViTEncoder(
@@ -198,14 +207,14 @@ class ViT_VQVAE(nn.Module):
         )
 
         # Calculate and print histogram of usage
-        usage_counts, _ = torch.histogram(self.vq.usage, bins=10)
+        usage_counts, _ = torch.histogram(self.vq.usage.cpu(), bins=10)
         print("Usage histogram:")
         for i, count in enumerate(usage_counts):
-            print(f"Bin {i+1}: {count.item()}")
+            print(f"Bin {i + 1}: {count.item()}")
 
 
 def load_laion_art_dataset(batch_size, resolution):
-    dataset = load_dataset("fantasyfish/laion-art", split="train[:100]")
+    dataset = load_dataset("fantasyfish/laion-art", split="train")
 
     def preprocess_image(example):
         image = example["image"].convert("RGB")
@@ -236,7 +245,7 @@ def train(model, dataloader, optimizer, num_epochs, device):
             total_loss += loss.item()
 
         avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch+1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
 
         # Print codebook utilization every 5 epochs
         if (epoch + 1) % 5 == 0:
