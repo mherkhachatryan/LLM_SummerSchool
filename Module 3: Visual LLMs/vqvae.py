@@ -133,11 +133,13 @@ class VectorQuantizer(nn.Module):
         z = z.permute(0, 2, 3, 1).contiguous()
         z_flattened = z.view(-1, self.e_dim)
 
-        # TODO: Implement the distance metric d between points.
-        d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
-            torch.sum(self.embedding.weight ** 2, dim=1) - \
-             2 * torch.matmul(z_flattened, self.embedding.weight.t())
-
+        # ||z-e||^2 = ||z||^2 + ||e||^2 - 2<z,e>
+        d = (
+            torch.sum(z_flattened ** 2, dim=1, keepdim=True) +
+            torch.sum(self.embedding.weight ** 2, dim=1) -
+            2 * torch.matmul(z_flattened, self.embedding.weight.t())
+        )
+        # torch.cdist(z_flattened, self.embedding.weight, p=2.0)
         min_encoding_indices = torch.argmin(d, dim=1).unsqueeze(1)
         min_encodings = torch.zeros(min_encoding_indices.shape[0], self.n_e).to(
             z.device
@@ -149,14 +151,21 @@ class VectorQuantizer(nn.Module):
 
         z_q = torch.matmul(min_encodings, self.embedding.weight).view(z.shape)
 
-        # TODO: loss = ...
-        # loss = F.mse_loss(z_q.detach(), z) + self.beta * F.mse_loss(z_q, z.detach())
         loss = (z_q.detach() - z).pow(2).mean()
         loss = loss + self.beta * (z_q - z.detach()).pow(2).mean()
-        # reconstruction_loss = F.mse_loss(z_q, z)
-        # commitment_loss = self.beta * F.mse_loss(z.detach(), z_q)
-        # loss = reconstruction_loss + commitment_loss
+
         z_q = z + (z_q - z).detach()
+        # z is input from the encoder
+        # z_q is the quantized version of z
+        # The output operation is z_q
+        # The gradient of this operation with respect to z is 1
+        # (z_q-z).detach() is a constant, has no gradient
+        # d(z+constant)/dz = 1
+
+        # During the forward pass, we use quantized z_q
+        # During the backward pass, we use the original z
+        # ~ First order approximation to the gradient
+        # Straight-through estimator, REINFORCE, variance reduction in REINFORCE.
 
         e_mean = torch.mean(min_encodings, dim=0)
         perplexity = torch.exp(-torch.sum(e_mean * torch.log(e_mean + 1e-10)))
